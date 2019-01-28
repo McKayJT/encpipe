@@ -38,17 +38,23 @@ file_open(const char *file, int create)
 static void
 derive_key(Context *ctx, char *password, size_t password_len)
 {
-    static uint8_t master_key[hydro_pwhash_MASTERKEYBYTES] = { 0 };
+    uint8_t salt[crypto_pwhash_SALTBYTES];
+
+    assert(crypto_pwhash_SALTBYTES >= crypto_generichash_BYTES_MIN);
 
     if (ctx->has_key) {
         die(0, "A single key is enough");
     }
-    if (hydro_pwhash_deterministic(ctx->key, sizeof ctx->key, password, password_len, HYDRO_CONTEXT,
-                                   master_key, PWHASH_OPSLIMIT, PWHASH_MEMLIMIT,
-                                   PWHASH_THREADS) != 0) {
+
+    crypto_generichash(salt, sizeof salt, (unsigned char *)password, password_len, NULL, 0);
+
+    if (crypto_pwhash(ctx->key, sizeof ctx->key, password, password_len, salt,
+                crypto_pwhash_OPSLIMIT_INTERACTIVE, crypto_pwhash_MEMLIMIT_INTERACTIVE,
+                crypto_pwhash_ALG_ARGON2ID13) != 0) {
         die(0, "Password hashing failed");
     }
-    hydro_memzero(password, password_len);
+
+    sodium_memzero(password, password_len);
     ctx->has_key = 1;
 }
 
@@ -57,28 +63,33 @@ stream_encrypt(Context *ctx)
 {
     unsigned char *const chunk_size_p = ctx->buf;
     unsigned char *const chunk        = chunk_size_p + 4;
-    uint64_t             chunk_id;
     ssize_t              max_chunk_size;
     ssize_t              chunk_size;
 
-    assert(ctx->sizeof_buf >= 4 + hydro_secretbox_HEADERBYTES);
-    max_chunk_size = ctx->sizeof_buf - 4 - hydro_secretbox_HEADERBYTES;
+    assert(ctx->sizeof_buf >= crypto_secretstream_xchacha20poly1305_HEADERBYTES +
+                              crypto_secretstream_xchacha20poly1305_ABYTES + 4);
+    max_chunk_size = ctx->sizeof_buf - crypto_secretstream_xchacha20poly1305_ABYTES - 4;
     assert(max_chunk_size <= 0x7fffffff);
-    chunk_id = 0;
-    while ((chunk_size = safe_read_partial(ctx->fd_in, chunk, max_chunk_size)) >= 0) {
+
+    /* push header before first chunk */
+    crypto_secretstream_xchacha20poly1305_init_push(ctx->state, ctx->buf, ctx->key);
+    if (safe_write(ctx->fd_out, ctx->buf,
+                crypto_secretstream_xchacha20poly1305_HEADERBYTES, -1) < 0) {
+        die(1, "write()");
+    }
+    while ((chunk_size = safe_read_partial(ctx->fd_in, ctx->rbuf, max_chunk_size)) >= 0) {
         STORE32_LE(chunk_size_p, (uint32_t) chunk_size);
-        if (hydro_secretbox_encrypt(chunk, chunk, chunk_size, chunk_id, HYDRO_CONTEXT, ctx->key) !=
-            0) {
+        if (crypto_secretstream_xchacha20poly1305_push(ctx->state, chunk, NULL, ctx->rbuf, chunk_size,
+                NULL, 0, chunk_size == 0 ? crypto_secretstream_xchacha20poly1305_TAG_FINAL : 0) != 0) {
             die(0, "Encryption error");
         }
-        if (safe_write(ctx->fd_out, chunk_size_p, 4 + hydro_secretbox_HEADERBYTES + chunk_size,
-                       -1) < 0) {
+        if (safe_write(ctx->fd_out, chunk_size_p,
+                4 + crypto_secretstream_xchacha20poly1305_ABYTES + chunk_size, -1) < 0) {
             die(1, "write()");
         }
         if (chunk_size == 0) {
             break;
         }
-        chunk_id++;
     }
     if (chunk_size < 0) {
         die(1, "read()");
@@ -89,28 +100,38 @@ stream_encrypt(Context *ctx)
 static int
 stream_decrypt(Context *ctx)
 {
-    unsigned char *const chunk_size_p = ctx->buf;
-    unsigned char *const chunk        = chunk_size_p + 4;
-    uint64_t             chunk_id;
+    unsigned char        tag;
+    ssize_t              chunk_id;
     ssize_t              readnb;
     ssize_t              max_chunk_size;
     ssize_t              chunk_size;
 
-    assert(ctx->sizeof_buf >= 4 + hydro_secretbox_HEADERBYTES);
-    max_chunk_size = ctx->sizeof_buf - 4 - hydro_secretbox_HEADERBYTES;
+    assert(ctx->sizeof_buf >= crypto_secretstream_xchacha20poly1305_HEADERBYTES +
+                              crypto_secretstream_xchacha20poly1305_ABYTES + 4);
+    max_chunk_size = ctx->sizeof_buf - crypto_secretstream_xchacha20poly1305_ABYTES - 4;
     assert(max_chunk_size <= 0x7fffffff);
+
+    /* pull header before first chunk */
+    if (safe_read(ctx->fd_in, ctx->rbuf, crypto_secretstream_xchacha20poly1305_HEADERBYTES) !=
+            crypto_secretstream_xchacha20poly1305_HEADERBYTES) {
+        die(1, "read()");
+    }
+    if (crypto_secretstream_xchacha20poly1305_init_pull(ctx->state, ctx->rbuf, ctx->key) != 0) {
+        die(0, "Invalid header");
+    }
     chunk_id = 0;
-    while ((readnb = safe_read(ctx->fd_in, chunk_size_p, 4)) == 4) {
-        chunk_size = LOAD32_LE(chunk_size_p);
+    tag = 0;
+    while ((readnb = safe_read(ctx->fd_in, ctx->rbuf, 4)) == 4) {
+        chunk_size = LOAD32_LE(ctx->rbuf);
         if (chunk_size > max_chunk_size) {
             die(0, "Chunk size too large ([%zd] > [%zd])", chunk_size, max_chunk_size);
         }
-        if (safe_read(ctx->fd_in, chunk, chunk_size + hydro_secretbox_HEADERBYTES) !=
-            chunk_size + hydro_secretbox_HEADERBYTES) {
+        if (safe_read(ctx->fd_in, ctx->rbuf, chunk_size + crypto_secretstream_xchacha20poly1305_ABYTES) !=
+            chunk_size + crypto_secretstream_xchacha20poly1305_ABYTES) {
             die(0, "Chunk too short ([%zd] bytes expected)", chunk_size);
         }
-        if (hydro_secretbox_decrypt(chunk, chunk, chunk_size + hydro_secretbox_HEADERBYTES,
-                                    chunk_id, HYDRO_CONTEXT, ctx->key) != 0) {
+        if (crypto_secretstream_xchacha20poly1305_pull(ctx->state, ctx->buf, NULL, &tag, ctx->rbuf,
+                    chunk_size + crypto_secretstream_xchacha20poly1305_ABYTES, NULL, 0) != 0) {
             fprintf(stderr, "Unable to decrypt chunk #%" PRIu64 " - ", chunk_id);
             if (chunk_id == 0) {
                 die(0, "Wrong password or key?");
@@ -118,18 +139,18 @@ stream_decrypt(Context *ctx)
                 die(0, "Corrupted or incomplete file?");
             }
         }
-        if (chunk_size == 0) {
-            break;
-        }
-        if (safe_write(ctx->fd_out, chunk, chunk_size, -1) < 0) {
+        if (safe_write(ctx->fd_out, ctx->buf, chunk_size, -1) < 0) {
             die(1, "write()");
+        }
+        if (tag == crypto_secretstream_xchacha20poly1305_TAG_FINAL) {
+            break;
         }
         chunk_id++;
     }
     if (readnb < 0) {
         die(1, "read()");
     }
-    if (chunk_size != 0) {
+    if (tag != crypto_secretstream_xchacha20poly1305_TAG_FINAL) {
         die(0, "Premature end of file");
     }
     return 0;
@@ -170,11 +191,11 @@ passgen(void)
     unsigned char password[32];
     char          hex[32 * 2 + 1];
 
-    hydro_random_buf(password, sizeof password);
-    hydro_bin2hex(hex, sizeof hex, password, sizeof password);
+    randombytes_buf(password, sizeof password);
+    sodium_bin2hex(hex, sizeof hex, password, sizeof password);
     puts(hex);
-    hydro_memzero(password, sizeof password);
-    hydro_memzero(hex, sizeof hex);
+    sodium_memzero(password, sizeof password);
+    sodium_memzero(hex, sizeof hex);
     exit(0);
 }
 
@@ -229,7 +250,7 @@ main(int argc, char *argv[])
 {
     Context ctx;
 
-    if (hydro_init() < 0) {
+    if (sodium_init() < 0) {
         die(1, "Unable to initialize the crypto library");
     }
     memset(&ctx, 0, sizeof ctx);
@@ -243,7 +264,12 @@ main(int argc, char *argv[])
     if ((ctx.buf = (unsigned char *) malloc(ctx.sizeof_buf)) == NULL) {
         die(1, "malloc()");
     }
-    assert(sizeof HYDRO_CONTEXT == hydro_secretbox_CONTEXTBYTES);
+    if ((ctx.rbuf = (unsigned char *) malloc(ctx.sizeof_buf)) == NULL) {
+        die(1, "malloc()");
+    }
+    if ((ctx.state = malloc(sizeof(crypto_secretstream_xchacha20poly1305_state))) == NULL) {
+        die(1, "malloc()");
+    }
 
     ctx.fd_in  = file_open(ctx.in, 0);
     ctx.fd_out = file_open(ctx.out, 1);
@@ -255,7 +281,7 @@ main(int argc, char *argv[])
     free(ctx.buf);
     close(ctx.fd_out);
     close(ctx.fd_in);
-    hydro_memzero(&ctx, sizeof ctx);
+    sodium_memzero(&ctx, sizeof ctx);
 
     return 0;
 }

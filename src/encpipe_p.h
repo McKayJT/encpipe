@@ -16,7 +16,7 @@
 #include <string.h>
 #include <unistd.h>
 
-#include <hydrogen.h>
+#include <sodium.h>
 
 #include "common.h"
 #include "safe_rw.h"
@@ -24,16 +24,14 @@
 #define MIN_BUFFER_SIZE 512
 #define MAX_BUFFER_SIZE 0x7fffffff
 #define DEFAULT_BUFFER_SIZE (1 * 1024 * 1024)
-#define HYDRO_CONTEXT "EncPipe"
-#define PWHASH_OPSLIMIT 1000000
-#define PWHASH_MEMLIMIT 0
-#define PWHASH_THREADS 1
 
 typedef struct Context_ {
+    crypto_secretstream_xchacha20poly1305_state *state;
     char *         in;
     char *         out;
-    unsigned char  key[hydro_secretbox_KEYBYTES];
+    unsigned char  key[crypto_secretstream_xchacha20poly1305_KEYBYTES];
     unsigned char *buf;
+    unsigned char *rbuf;
     size_t         sizeof_buf;
     int            fd_in;
     int            fd_out;
