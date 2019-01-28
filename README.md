@@ -1,7 +1,7 @@
 Encpipe
 =======
 
-The dum^H^H^Hsimplest encryption tool in the world.
+The dum^H^H^Hsimplest encryption tool in the world, libsodium edition.
 
 # Usage
 
@@ -40,8 +40,7 @@ zstd -5 -v -c "$FILE" | encpipe -e -p "$PASSWD" -o "${FILE}.zst.encpipe"
 
 # Dependencies
 
-None. It includes [libhydrogen](https://libhydrogen.org) as a
-submodule. There is nothing to install.
+[libsodium](https://https://github.com/jedisct1/libsodium).
 
 # Installation
 
@@ -52,4 +51,5 @@ sudo make install
 
 # Why
 
-It was faster to write than remember how to use GnuPG and OpenSSL.
+I wanted a simple program for streaming file encryption, but didn't
+want to place my trust in the Gimli permutation yet.
