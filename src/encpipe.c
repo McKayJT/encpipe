@@ -38,15 +38,14 @@ file_open(const char *file, int create)
 static void
 derive_key(Context *ctx, char *password, size_t password_len)
 {
-    uint8_t salt[crypto_pwhash_SALTBYTES];
-
-    assert(crypto_pwhash_SALTBYTES >= crypto_generichash_BYTES_MIN);
+    /* Fibonacci sequence mod 255 */
+    uint8_t salt[crypto_pwhash_SALTBYTES] =
+        {0x01, 0x02, 0x03, 0x05, 0x08, 0x0d, 0x15, 0x22,
+         0x37, 0x59, 0x90, 0xe9, 0x79, 0x62, 0xdb, 0x3d};
 
     if (ctx->has_key) {
         die(0, "A single key is enough");
     }
-
-    crypto_generichash(salt, sizeof salt, (unsigned char *)password, password_len, NULL, 0);
 
     if (crypto_pwhash(ctx->key, sizeof ctx->key, password, password_len, salt,
                 crypto_pwhash_OPSLIMIT_INTERACTIVE, crypto_pwhash_MEMLIMIT_INTERACTIVE,
