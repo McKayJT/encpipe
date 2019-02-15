@@ -1,0 +1,63 @@
+.Dd $Mdocdate: February 11 2019 $ 
+.Dt ENCPIPE 1 
+.Os 
+.Sh NAME 
+.Nm encpipe 
+.Nd encrypt and decrypt streams
+.Sh SYNOPSIS 
+.Nm encpipe 
+.Fl e
+.Fl p Ar password
+.Op Fl i Ar inputfile
+.Op Fl o Ar outputfile
+.Nm
+.Fl e
+.Fl P Ar password\ file
+.Op Fl i Ar inputfile
+.Op Fl o Ar outputfile
+.Nm
+.Fl d
+.Fl p Ar password
+.Op Fl i Ar inputfile
+.Op Fl o Ar outputfile
+.Nm
+.Fl d
+.Fl P Ar password\ file
+.Op Fl i Ar inputfile
+.Op Fl o Ar outputfile
+.Nm
+.Fl G
+.Sh DESCRIPTION 
+The 
+.Nm 
+utility encrypts and decrypts streams of data using
+.Lb libsodium .
+If no input or output file is specified, it will use stdin and stdout, respectively.
+
+The arguments are as follows:
+.Bl -tag
+.It Fl e
+encrypt stream
+.It Fl d
+decrypt stream
+.It Fl p
+specify password for encryption/decryption
+.It Fl P
+read password from file
+.Ar password\ file .
+This file may contain arbitrary bytes.
+This is recommended over the
+.Fl p
+option due to security.
+.It Fl G
+generate a password in hexadecimal format using 32 random bytes.
+.Sh EXIT STATUS 
+.Ex -std
+.Sh HISTORY 
+This is based on the original encpipe program by
+.An Frank Denis
+hosted at
+.Lk https://github.com/jedisct1/encpipe
+
+The gimli based encryption has been switched for encryption based on
+.Lb libsodium .
